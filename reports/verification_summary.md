@@ -42,3 +42,23 @@ period, another sensor, repeated NN training seeds, verified health labels, a fr
 dependency installation on another operating system, or validation of real faults.
 Human authorship and learning claims must be completed by the student using actual
 personal actions. The previous research report's numerical findings are unchanged.
+
+## Fresh GitHub clone replay, 25 October 2026
+
+The uploaded main commit `a690ee10cdc8528bb0d2bdad53d39eeae66814c3` was cloned
+into a new directory without saved runs, data or local configuration. Using the
+authorized original CSV and the existing Python environment, all 26 / 21 / 21
+notebook code cells executed in fresh real kernels and 43 tests passed without skips.
+The original CSV and all 61 downloaded tracked files retained their hashes after
+new test reports were saved separately. The downloaded clone was otherwise clean.
+
+Review found two outdated teaching descriptions in notebook 01: the shared NN is
+trained in code cell 10, and the final comparison contains six detectors. Those
+markdown descriptions have been corrected without changing any executable cell.
+The clarified notebooks were then replayed in full, and all 43 tests passed again.
+All 30 default per-reading files and sensitivity event outcomes matched the first
+GitHub replay. Updated test reports correspond to the clarified notebook source.
+
+This verifies a fresh clone with no saved experiment state; it does not claim a
+new dependency installation, another operating system or independent fault data.
+Raw data and measurement-level execution evidence remain local.
