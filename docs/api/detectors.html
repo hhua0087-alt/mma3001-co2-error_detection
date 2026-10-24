@@ -1,0 +1,145 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>detectors API</title><style>body{font:16px/1.55 system-ui,sans-serif;color:#18232c;background:#fff;max-width:1050px;margin:36px auto;padding:0 24px}
+h1,h2,h3{color:#000;line-height:1.25}nav{margin:20px 0}nav a{margin-right:14px}a{color:#165d91}
+pre{background:#f2f4f6;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:Consolas,monospace}
+section{margin:32px 0}summary{cursor:pointer;color:#165d91}footer{margin:40px 0;color:#4a555f}</style><body><nav><a href="index.html">API home</a><a href="analysis.html">analysis</a><a href="data.html">data</a><a href="detectors.html">detectors</a><a href="evaluation.html">evaluation</a><a href="extraction.html">extraction</a><a href="faults.html">faults</a><a href="models.html">models</a><a href="project.html">project</a></nav><h1>detectors API</h1><p>Two-sided CUSUM with label-free resets and validation-only calibration.</p><section id="cusum_series"><h2><code>cusum_series(residual, k, h, max_gap_minutes=20)</code></h2><pre>Accumulate two-sided residual shifts in time order; reset after crossing h or after a large gap.
+
+Args:
+    residual: Finite signed residuals centered on their training mean.
+    k: Nonnegative allowance per reading.
+    h: Positive cumulative threshold.
+Returns:
+    Series: Accumulated statistic before resets, not CO2 predictions or point residuals.
+Raises:
+    ValueError: Invalid k/h or non-finite residuals.</pre></section><section id="normalized_cusum"><h2><code>normalized_cusum(z, kappa, H, max_gap_minutes=20)</code></h2><pre>Causal two-sided CUSUM of centered, threshold-scaled NN residuals.
+
+z: finite Series with increasing unique UTC timestamps.
+kappa: nonnegative allowance in NN-threshold units.
+H: positive cumulative alarm threshold in the same scaled units.
+Alarms and &gt;20-minute gaps reset state; event labels are never inputs.
+Returned upper/lower/score values are BEFORE an alarm-triggered reset.</pre></section><section id="select_cusum_limit"><h2><code>select_cusum_limit(residual, k, sigma, quantile=0.99, initial_grid=None, allow_extension=False, max_gap_minutes=20)</code></h2><pre>Choose the first limit meeting an unmodified-validation alert budget.
+
+Args:
+    residual: Centred validation residual Series in ppm, not test faults.
+    k: Allowance in ppm per reading.
+    sigma: Training residual SD in ppm, strictly positive.
+    quantile: Budget convention; .99 permits ceil(1% of readings) alarms.
+    initial_grid: Multipliers of training sigma; default .5 to 40.5 by .25.
+    allow_extension: Extend the common grid in quarter-SD steps if infeasible.
+    max_gap_minutes: Gap that resets the statistic, shared with inference.
+Returns:
+    dict: h, validation_alerts, budget, initial_grid_feasible and trial records.
+Raises:
+    ValueError: Invalid settings or no feasible limit without extension.</pre></section><details><summary>Inspect module source</summary><pre><code>&quot;&quot;&quot;Two-sided CUSUM with label-free resets and validation-only calibration.&quot;&quot;&quot;
+import numpy as np
+import pandas as pd
+
+def cusum_series(residual,k,h,max_gap_minutes=20):
+    &quot;&quot;&quot;Accumulate two-sided residual shifts in time order; reset after crossing h or after a large gap.
+
+    Args:
+        residual: Finite signed residuals centered on their training mean.
+        k: Nonnegative allowance per reading.
+        h: Positive cumulative threshold.
+    Returns:
+        Series: Accumulated statistic before resets, not CO2 predictions or point residuals.
+    Raises:
+        ValueError: Invalid k/h or non-finite residuals.&quot;&quot;&quot;
+    if not 0&lt;=k or not h&gt;0 or not np.isfinite([k,h]).all():
+        raise ValueError(&#x27;CUSUM requires finite k&gt;=0 and h&gt;0.&#x27;)
+    if not np.isfinite(residual.to_numpy()).all():
+        raise ValueError(&#x27;CUSUM residuals must be finite.&#x27;)
+    scores=[]
+    up=down=0.0
+    previous=None
+    for timestamp,value in residual.items():
+        if previous is None or (timestamp-previous).total_seconds()/60&gt;max_gap_minutes:
+            up=down=0.0
+        # Accumulate each direction separately; subtract allowance k at every step.
+        up=max(0.0,up+float(value)-k)
+        down=max(0.0,down-float(value)-k)
+        score=max(up,down)
+        scores.append(score)  # Determine the current alarm from the score before reset.
+        if score&gt;h:
+            up=down=0.0      # Reset on the alarm, without reading fault-end labels.
+        previous=timestamp
+    return pd.Series(scores,index=residual.index)
+
+
+def normalized_cusum(z,kappa,H,max_gap_minutes=20):
+    &quot;&quot;&quot;Causal two-sided CUSUM of centered, threshold-scaled NN residuals.
+
+    z: finite Series with increasing unique UTC timestamps.
+    kappa: nonnegative allowance in NN-threshold units.
+    H: positive cumulative alarm threshold in the same scaled units.
+    Alarms and &gt;20-minute gaps reset state; event labels are never inputs.
+    Returned upper/lower/score values are BEFORE an alarm-triggered reset.
+    &quot;&quot;&quot;
+    if not np.isfinite([kappa, H]).all() or kappa &lt; 0 or H &lt;= 0:
+        raise ValueError(&quot;Require finite kappa &gt;= 0 and H &gt; 0.&quot;)
+    if not isinstance(z.index, pd.DatetimeIndex) or z.index.hasnans or z.index.tz is None:
+        raise ValueError(&quot;Require a timezone-aware DatetimeIndex.&quot;)
+    if not z.index.is_monotonic_increasing or not z.index.is_unique:
+        raise ValueError(&quot;Timestamps must increase and be unique.&quot;)
+    values = z.to_numpy(dtype=float)
+    if not np.isfinite(values).all():
+        raise ValueError(&quot;CUSUM input must be finite.&quot;)
+    gaps = z.index.to_series().diff().dt.total_seconds().to_numpy()/60
+    upper, lower, scores, alarms = np.zeros(len(z)), np.zeros(len(z)), np.zeros(len(z)), np.zeros(len(z), dtype=bool)
+    up = down = 0.0
+    for i, value in enumerate(values):
+        if i == 0 or gaps[i] &gt; max_gap_minutes:
+            up = down = 0.0
+        up = max(0.0, up + value - kappa)
+        down = max(0.0, down - value - kappa)
+        upper[i], lower[i] = up, down
+        scores[i] = max(up, down)
+        alarms[i] = scores[i] &gt; H
+        if alarms[i]:
+            up = down = 0.0
+    return pd.DataFrame({&quot;upper&quot;: upper, &quot;lower&quot;: lower, &quot;score&quot;: scores, &quot;alarm&quot;: alarms}, index=z.index)
+
+
+
+def select_cusum_limit(residual,k,sigma,quantile=.99,initial_grid=None,allow_extension=False,max_gap_minutes=20):
+    &quot;&quot;&quot;Choose the first limit meeting an unmodified-validation alert budget.
+
+    Args:
+        residual: Centred validation residual Series in ppm, not test faults.
+        k: Allowance in ppm per reading.
+        sigma: Training residual SD in ppm, strictly positive.
+        quantile: Budget convention; .99 permits ceil(1% of readings) alarms.
+        initial_grid: Multipliers of training sigma; default .5 to 40.5 by .25.
+        allow_extension: Extend the common grid in quarter-SD steps if infeasible.
+        max_gap_minutes: Gap that resets the statistic, shared with inference.
+    Returns:
+        dict: h, validation_alerts, budget, initial_grid_feasible and trial records.
+    Raises:
+        ValueError: Invalid settings or no feasible limit without extension.
+    &quot;&quot;&quot;
+    if not np.isfinite(sigma) or sigma&lt;=0 or not 0&lt;quantile&lt;1 or len(residual)==0:
+        raise ValueError(&#x27;Require positive sigma, a nonempty validation series and 0&lt;quantile&lt;1.&#x27;)
+    grid=np.asarray(initial_grid if initial_grid is not None else np.arange(.5,40.5001,.25))
+    if len(grid)==0 or not np.isfinite(grid).all() or (grid&lt;=0).any():
+        raise ValueError(&#x27;CUSUM grid must contain finite positive multipliers.&#x27;)
+    budget=int(np.ceil((1-quantile)*len(residual)))
+    trials=[];chosen=None
+    for multiplier in grid:
+        h=float(multiplier*sigma)
+        alerts=int((cusum_series(residual,k,h,max_gap_minutes)&gt;h).sum())
+        trials.append(dict(h=h,validation_alerts=alerts))
+        if alerts&lt;=budget:chosen=(h,alerts);break
+    initial=chosen is not None
+    initial_trials=list(trials)
+    if chosen is None and allow_extension:
+        bound=float(residual.abs().sum())+sigma
+        first=int(round(float(grid[-1])*4))+1
+        last=int(np.ceil(bound/sigma*4))+1
+        for quarter in range(first,last+1):
+            h=float(quarter/4*sigma)
+            alerts=int((cusum_series(residual,k,h,max_gap_minutes)&gt;h).sum())
+            trials.append(dict(h=h,validation_alerts=alerts))
+            if alerts&lt;=budget:chosen=(h,alerts);break
+    if chosen is None:raise ValueError(&#x27;No CUSUM threshold meets the validation budget.&#x27;)
+    return dict(h=chosen[0],validation_alerts=chosen[1],budget=budget,
+                initial_grid_feasible=initial,trials=trials,initial_trials=initial_trials)
+</code></pre></details></body></html>

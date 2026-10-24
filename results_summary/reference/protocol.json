@@ -1,0 +1,28 @@
+{
+  "source_sha256": "e548b85637304d0c0b9cae3d3e6026ece57feb8c1cc0a5951bccd9c5860328c4",
+  "split_counts": {
+    "train": 7373,
+    "validation": 2458,
+    "test": 2458,
+    "excluded": 1511
+  },
+  "eight_input_weights_sha256": "1553f089cbc6369503af333daebbf293c95f6b9407d5ded9f38ccb8fa8738c94",
+  "six_input_weights_sha256": "fded602ae997690b6be855003db949e72e0c0a1e1237c0362662fbb4e54d6f33",
+  "kappa": 0.4,
+  "H": 0.875,
+  "six_input_cusum_h": 1540.6798562924141,
+  "reference_main_version": "nn_threshold_cusum_trial_v1",
+  "reference_input_version": "nn_input_comparison_v2",
+  "versions": {
+    "python": "3.13.17",
+    "numpy": "2.3.5",
+    "pandas": "3.0.1",
+    "sklearn": "1.9.1"
+  },
+  "status": "Exploratory aggregate reference from the inspected period; no point measurements are bundled.",
+  "prepared_sha256": "42dd37cac25fa47408b2232e320b8e16609197b57aac8285aa254f19d2c55c58",
+  "prepared_fingerprint_version": "utc_ns_float64_v1",
+  "raw_source_filename": "5EnvSensor_MayToDec2024_180kRows.csv",
+  "raw_source_sha256": "73c6e89bf306c7a6f1e769504c772ee04cbdd198eb51aa6ffae2b138e093ff61",
+  "historical_extract_filename": "env_6012002000869_all.csv"
+}

@@ -11,6 +11,9 @@ history, while CUSUM parameters trade abrupt departures against small sustained
 residuals. An eight/six-input NN comparison tests this explanation and retains
 counterexamples rather than assuming that removing history must improve detection.
 
+Project stages and preserved historical versions are described in
+[`CHANGELOG.md`](CHANGELOG.md).
+
 ## Start here
 
 Run these English notebooks in order, from a fresh kernel for each notebook.

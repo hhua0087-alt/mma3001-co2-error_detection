@@ -1,0 +1,149 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>extraction API</title><style>body{font:16px/1.55 system-ui,sans-serif;color:#18232c;background:#fff;max-width:1050px;margin:36px auto;padding:0 24px}
+h1,h2,h3{color:#000;line-height:1.25}nav{margin:20px 0}nav a{margin-right:14px}a{color:#165d91}
+pre{background:#f2f4f6;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:Consolas,monospace}
+section{margin:32px 0}summary{cursor:pointer;color:#165d91}footer{margin:40px 0;color:#4a555f}</style><body><nav><a href="index.html">API home</a><a href="analysis.html">analysis</a><a href="data.html">data</a><a href="detectors.html">detectors</a><a href="evaluation.html">evaluation</a><a href="extraction.html">extraction</a><a href="faults.html">faults</a><a href="models.html">models</a><a href="project.html">project</a></nav><h1>extraction API</h1><p>Stream the course environmental CSV into the documented long-format input.
+
+The source is read only. JSON timestamps are Unix seconds converted to UTC.
+Malformed source rows are counted; preparation subsequently validates numeric
+channels, complete timestamps and conflicting duplicates.</p><section id="measurements"><h2><code>measurements(row, variable_filter=None)</code></h2><pre>Convert one raw CSV row&#x27;s JSON into measurement records.
+
+Invalid measurements are skipped; malformed JSON raises ValueError so the
+caller can count bad source rows. Timestamps are Unix seconds in UTC.</pre></section><section id="extract"><h2><code>extract(source, output, sensor, variable_filter, progress_every, force)</code></h2><pre>Stream an authorized raw CSV into a new long-format sensor extract.
+
+Args:
+    source: Raw CSV Path with id, sensorid and jsondata fields.
+    output: Destination CSV Path, different from the raw source.
+    sensor: String sensor identifier.
+    variable_filter: Optional exact channel name; None retains all channels.
+    progress_every: Positive number of source rows between progress messages.
+    force: Whether an existing destination may be replaced.
+Returns:
+    None: Writes the six-column extract and prints actual extraction counts.
+Raises:
+    ValueError: Invalid source schema, progress setting, identical paths or no matching measurements.
+    FileNotFoundError: Source is missing.
+    FileExistsError: Destination exists and force is False.</pre></section><details><summary>Inspect module source</summary><pre><code>&quot;&quot;&quot;Stream the course environmental CSV into the documented long-format input.
+
+The source is read only. JSON timestamps are Unix seconds converted to UTC.
+Malformed source rows are counted; preparation subsequently validates numeric
+channels, complete timestamps and conflicting duplicates.
+&quot;&quot;&quot;
+import csv
+from datetime import datetime,timezone
+import io,json,os,tempfile
+from pathlib import Path
+OUTPUT_COLUMNS=(&quot;sensor_id&quot;,&quot;timestamp_utc&quot;,&quot;variable&quot;,&quot;unit&quot;,&quot;value&quot;,&quot;source_row_id&quot;)
+
+def measurements(row, variable_filter=None):
+    &quot;&quot;&quot;Convert one raw CSV row&#x27;s JSON into measurement records.
+
+    Invalid measurements are skipped; malformed JSON raises ValueError so the
+    caller can count bad source rows. Timestamps are Unix seconds in UTC.
+    &quot;&quot;&quot;
+    try:
+        payload = json.loads(row[&quot;jsondata&quot;])
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError(&quot;invalid jsondata&quot;) from exc
+    if not isinstance(payload, list):
+        raise ValueError(&quot;jsondata is not a list&quot;)
+
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        variable = item.get(&quot;variable&quot;) or {}
+        if not isinstance(variable, dict):
+            continue
+        name = variable.get(&quot;name&quot;)
+        if not isinstance(name, str) or (variable_filter and name != variable_filter):
+            continue
+        for reading in item.get(&quot;values&quot;) or []:
+            if not isinstance(reading, dict) or reading.get(&quot;value&quot;) is None:
+                continue
+            try:
+                timestamp = datetime.fromtimestamp(int(reading[&quot;time&quot;]), timezone.utc)
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                continue
+            yield {
+                &quot;sensor_id&quot;: row[&quot;sensorid&quot;],
+                &quot;timestamp_utc&quot;: timestamp.isoformat(timespec=&quot;seconds&quot;),
+                &quot;variable&quot;: name,
+                &quot;unit&quot;: variable.get(&quot;unit&quot;, &quot;&quot;),
+                &quot;value&quot;: reading[&quot;value&quot;],
+                &quot;source_row_id&quot;: row.get(&quot;id&quot;, &quot;&quot;),
+            }
+
+
+def extract(source, output, sensor, variable_filter, progress_every, force):
+    &quot;&quot;&quot;Stream an authorized raw CSV into a new long-format sensor extract.
+
+    Args:
+        source: Raw CSV Path with id, sensorid and jsondata fields.
+        output: Destination CSV Path, different from the raw source.
+        sensor: String sensor identifier.
+        variable_filter: Optional exact channel name; None retains all channels.
+        progress_every: Positive number of source rows between progress messages.
+        force: Whether an existing destination may be replaced.
+    Returns:
+        None: Writes the six-column extract and prints actual extraction counts.
+    Raises:
+        ValueError: Invalid source schema, progress setting, identical paths or no matching measurements.
+        FileNotFoundError: Source is missing.
+        FileExistsError: Destination exists and force is False.
+    &quot;&quot;&quot;
+    source,output=Path(source),Path(output)
+    if source.resolve()==output.resolve():
+        raise ValueError(&#x27;Source and destination must differ; the raw source is read only.&#x27;)
+    if type(progress_every) is not int or progress_every&lt;1:
+        raise ValueError(&#x27;progress_every must be a positive integer.&#x27;)
+    if not source.is_file():
+        raise FileNotFoundError(f&quot;Input CSV not found: {source}&quot;)
+    if output.exists() and not force:
+        raise FileExistsError(f&quot;Output exists: {output} (use --force to replace it)&quot;)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temp_name = None
+    read_rows = selected_rows = written_rows = bad_json_rows = 0
+    total_bytes = source.stat().st_size
+
+    try:
+        # Read line by line; the entire 353 MB CSV is never loaded into memory.
+        with source.open(&quot;rb&quot;) as raw:
+            with io.TextIOWrapper(raw, encoding=&quot;utf-8-sig&quot;, newline=&quot;&quot;) as text:
+                reader = csv.DictReader(text)
+                required = {&quot;id&quot;, &quot;sensorid&quot;, &quot;jsondata&quot;}
+                if not required.issubset(reader.fieldnames or []):
+                    raise ValueError(f&quot;CSV missing required columns: {sorted(required)}&quot;)
+
+                with tempfile.NamedTemporaryFile(
+                    mode=&quot;w&quot;, encoding=&quot;utf-8&quot;, newline=&quot;&quot;, delete=False,
+                    dir=output.parent, prefix=f&quot;.{output.name}.&quot;, suffix=&quot;.tmp&quot;
+                ) as target:
+                    temp_name = Path(target.name)
+                    writer = csv.DictWriter(target, fieldnames=OUTPUT_COLUMNS)
+                    writer.writeheader()
+                    for row in reader:
+                        read_rows += 1
+                        if row[&quot;sensorid&quot;] == sensor:
+                            selected_rows += 1
+                            try:
+                                for record in measurements(row, variable_filter):
+                                    writer.writerow(record)
+                                    written_rows += 1
+                            except ValueError:
+                                bad_json_rows += 1
+                        if read_rows % progress_every == 0:
+                            percent = 100 * raw.tell() / total_bytes
+                            print(f&quot;Progress ~{percent:5.1f}% | source rows {read_rows:,} | output rows {written_rows:,}&quot;, flush=True)
+
+        if written_rows == 0:
+            raise ValueError(&quot;No measurements matched. Check --sensor and --variable.&quot;)
+        os.replace(temp_name, output)
+        temp_name = None
+    finally:
+        if temp_name is not None:
+            temp_name.unlink(missing_ok=True)
+
+    print(f&quot;Done: {read_rows:,} source rows; {selected_rows:,} sensor rows; {written_rows:,} measurements&quot;)
+    print(f&quot;Invalid JSON rows for this sensor: {bad_json_rows:,}&quot;)
+    print(f&quot;Saved: {output.resolve()}&quot;)
+
+</code></pre></details></body></html>
