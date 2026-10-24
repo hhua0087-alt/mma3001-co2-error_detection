@@ -1,21 +1,14 @@
-MIT License
+Academic assessment permission
 
-Copyright (c) 2026 hhua0087-alt
+Copyright in original project code remains with its author.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permission is granted to MMA3001 teaching staff and appointed assessors to copy,
+run and inspect this project for assessment, moderation and academic review.
+No broader permission to redistribute, sublicense or use the original project
+code is granted by this notice. Other uses require the author's permission.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Third-party software retains its own licenses. Course data, teaching materials
+and third-party publications are not covered by this permission and are not
+included in this code submission. Source data must be obtained through an
+authorized course channel. This assessment permission does not establish that
+the code is suitable for operational building monitoring.
