@@ -1,0 +1,187 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>data API</title><style>body{font:16px/1.55 system-ui,sans-serif;color:#18232c;background:#fff;max-width:1050px;margin:36px auto;padding:0 24px}
+h1,h2,h3{color:#000;line-height:1.25}nav{margin:20px 0}nav a{margin-right:14px}a{color:#165d91}
+pre{background:#f2f4f6;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:Consolas,monospace}
+section{margin:32px 0}summary{cursor:pointer;color:#165d91}footer{margin:40px 0;color:#4a555f}</style><body><nav><a href="index.html">API home</a><a href="analysis.html">analysis</a><a href="data.html">data</a><a href="detectors.html">detectors</a><a href="evaluation.html">evaluation</a><a href="extraction.html">extraction</a><a href="faults.html">faults</a><a href="models.html">models</a><a href="project.html">project</a></nav><h1>data API</h1><p>Sensor preparation and causal input construction with shared row eligibility.</p><section id="prepared_fingerprint"><h2><code>prepared_fingerprint(frame)</code></h2><pre>Hash ordered UTC timestamps and the three model channels, independent of CSV layout.
+
+Uses nanosecond timestamps and little-endian float64 values. The source file
+retains its own separate SHA-256 digest; this digest compares prepared inputs.</pre></section><section id="read_environment_input"><h2><code>read_environment_input(path, sensor_id)</code></h2><pre>Read a long-format extract or stream a raw course CSV, selecting one sensor.
+
+Raw rows contain sensorid and a jsondata measurement list. Only the selected
+sensor&#x27;s three required channels are retained in memory. The in-memory CSV
+conversion uses the same numeric parser as a saved extract, preserving the
+established training values. No extract is written and the source is read only.
+Returns a long-format frame and format/extraction audit counts. Malformed JSON
+rows are counted and skipped, consistently with the standalone extraction tool.</pre></section><section id="prepare_environment_csv"><h2><code>prepare_environment_csv(path, sensor_id, minimum_rows=500)</code></h2><pre>Prepare one sensor directly from raw course data or a long-format CSV.
+
+Args:
+    path: Raw course CSV or long-format extract with all required channels.
+    sensor_id: String sensor identifier.
+    minimum_rows: Positive minimum number of complete timestamps.
+Returns:
+    (frame, audit): UTC-indexed CO2 ppm, temperature, humidity and audit metadata.
+Raises:
+    ValueError: Missing columns/channels, invalid values, conflicts or too few rows.</pre></section><section id="make_features"><h2><code>make_features(observed)</code></h2><pre>Build eight features from UTC-indexed observations; CO2 lags use past readings only.</pre></section><section id="chronological_split"><h2><code>chronological_split(original, max_gap_minutes=20, minimum_rows=500)</code></h2><pre>Construct a common 60/20/20 time split for both input groups.
+
+Args:
+    original: Sorted UTC-indexed complete sensor channels.
+    max_gap_minutes: Largest allowed gap within the six-reading history.
+    minimum_rows: Required eligible observations.
+Returns:
+    dict: Feature frame, eligible/train/validation/test indices and row labels.
+Raises:
+    ValueError: Too few eligible observations or invalid gap setting.</pre></section><details><summary>Inspect module source</summary><pre><code>&quot;&quot;&quot;Sensor preparation and causal input construction with shared row eligibility.&quot;&quot;&quot;
+import csv
+import hashlib
+import io
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from .project import file_sha256
+from .extraction import measurements, OUTPUT_COLUMNS
+
+REQUIRED_CHANNELS = [&quot;Carbon dioxide&quot;, &quot;Temperature&quot;, &quot;Humidity&quot;]
+PREPARED_FINGERPRINT_VERSION = &quot;utc_ns_float64_v1&quot;
+
+
+def prepared_fingerprint(frame):
+    &quot;&quot;&quot;Hash ordered UTC timestamps and the three model channels, independent of CSV layout.
+
+    Uses nanosecond timestamps and little-endian float64 values. The source file
+    retains its own separate SHA-256 digest; this digest compares prepared inputs.
+    &quot;&quot;&quot;
+    digest = hashlib.sha256()
+    header = f&quot;{PREPARED_FINGERPRINT_VERSION}\n{REQUIRED_CHANNELS!r}\n{len(frame)}\n&quot;
+    digest.update(header.encode(&quot;utf-8&quot;))
+    index = frame.index.tz_convert(&quot;UTC&quot;).as_unit(&quot;ns&quot;).asi8
+    digest.update(np.ascontiguousarray(index, dtype=&quot;&lt;i8&quot;).tobytes())
+    digest.update(np.ascontiguousarray(frame[REQUIRED_CHANNELS], dtype=&quot;&lt;f8&quot;).tobytes())
+    return digest.hexdigest()
+
+
+def read_environment_input(path, sensor_id):
+    &quot;&quot;&quot;Read a long-format extract or stream a raw course CSV, selecting one sensor.
+
+    Raw rows contain sensorid and a jsondata measurement list. Only the selected
+    sensor&#x27;s three required channels are retained in memory. The in-memory CSV
+    conversion uses the same numeric parser as a saved extract, preserving the
+    established training values. No extract is written and the source is read only.
+    Returns a long-format frame and format/extraction audit counts. Malformed JSON
+    rows are counted and skipped, consistently with the standalone extraction tool.
+    &quot;&quot;&quot;
+    header = pd.read_csv(path, nrows=0).columns
+    if {&quot;sensor_id&quot;, &quot;timestamp_utc&quot;, &quot;variable&quot;, &quot;value&quot;}.issubset(header):
+        raw = pd.read_csv(path, dtype={&quot;sensor_id&quot;: str, &quot;variable&quot;: str})
+        return raw, {&quot;input_format&quot;: &quot;long_format_extract&quot;}
+    if not {&quot;sensorid&quot;, &quot;jsondata&quot;}.issubset(header):
+        raise ValueError(&quot;CSV must contain sensorid/jsondata (raw course data), or &quot;
+                         &quot;sensor_id/timestamp_utc/variable/value (long-format extract).&quot;)
+
+    counts = dict(input_format=&quot;raw_course_csv&quot;, source_rows_read=0,
+                  selected_sensor_rows=0, invalid_json_rows=0, required_channel_records=0)
+    with io.StringIO(newline=&quot;&quot;) as buffer:
+        writer = csv.DictWriter(buffer, fieldnames=OUTPUT_COLUMNS)
+        writer.writeheader()
+        with Path(path).open(encoding=&quot;utf-8-sig&quot;, newline=&quot;&quot;) as stream:
+            for row in csv.DictReader(stream):
+                counts[&quot;source_rows_read&quot;] += 1
+                if row[&quot;sensorid&quot;] != str(sensor_id):
+                    continue
+                counts[&quot;selected_sensor_rows&quot;] += 1
+                try:
+                    for record in measurements(row):
+                        if record[&quot;variable&quot;] in REQUIRED_CHANNELS:
+                            writer.writerow(record)
+                            counts[&quot;required_channel_records&quot;] += 1
+                except ValueError:
+                    counts[&quot;invalid_json_rows&quot;] += 1
+        buffer.seek(0)
+        raw = pd.read_csv(buffer, dtype={&quot;sensor_id&quot;: str, &quot;variable&quot;: str})
+    return raw, counts
+
+def prepare_environment_csv(path, sensor_id, minimum_rows=500):
+    &quot;&quot;&quot;Prepare one sensor directly from raw course data or a long-format CSV.
+
+    Args:
+        path: Raw course CSV or long-format extract with all required channels.
+        sensor_id: String sensor identifier.
+        minimum_rows: Positive minimum number of complete timestamps.
+    Returns:
+        (frame, audit): UTC-indexed CO2 ppm, temperature, humidity and audit metadata.
+    Raises:
+        ValueError: Missing columns/channels, invalid values, conflicts or too few rows.&quot;&quot;&quot;
+    if type(minimum_rows) is not int or minimum_rows &lt; 1:
+        raise ValueError(&#x27;Reading counts, event counts and minimum_rows must be positive integers.&#x27;)
+    raw, input_audit = read_environment_input(path, sensor_id)
+    needed = REQUIRED_CHANNELS
+    selected = raw[(raw.sensor_id == str(sensor_id)) &amp; raw.variable.isin(needed)].copy()
+    missing = sorted(set(needed) - set(selected.variable))
+    if missing:
+        raise ValueError(f&quot;Sensor {sensor_id} is missing required channels: {&#x27;, &#x27;.join(missing)}. &quot;
+                         &quot;Use the original raw course CSV or a full-channel extract. &quot;
+                         &quot;A CO2-only extract cannot supply this model&#x27;s environmental inputs.&quot;)
+    selected[&quot;timestamp_utc&quot;] = pd.to_datetime(selected.timestamp_utc, utc=True, errors=&quot;coerce&quot;)
+    selected[&quot;value&quot;] = pd.to_numeric(selected.value, errors=&quot;coerce&quot;)
+    if selected.timestamp_utc.isna().any() or not np.isfinite(selected.value.to_numpy()).all():
+        raise ValueError(&#x27;Selected records contain invalid timestamps or non-finite values.&#x27;)
+    keys = [&quot;timestamp_utc&quot;, &quot;variable&quot;]
+    if (selected.groupby(keys).value.nunique() &gt; 1).any():
+        raise ValueError(&#x27;Conflicting values exist at the same timestamp and variable; investigate first.&#x27;)
+    duplicates_removed = int(selected.duplicated(keys).sum())
+    selected = selected.drop_duplicates(keys)
+    prepared = selected.pivot(index=&quot;timestamp_utc&quot;, columns=&quot;variable&quot;, values=&quot;value&quot;).sort_index()
+    prepared = prepared.dropna(subset=needed).copy()
+    if len(prepared) &lt; minimum_rows:
+        raise ValueError(&#x27;Too few complete timestamps.&#x27;)
+    details = {&quot;sensor_id&quot;: str(sensor_id), &quot;complete_timestamps&quot;: len(prepared),
+               &quot;identical_duplicates_removed&quot;: duplicates_removed,
+               &quot;source_filename&quot;: Path(path).name, &quot;source_sha256&quot;: file_sha256(path),
+               &quot;prepared_sha256&quot;: prepared_fingerprint(prepared),
+               &quot;prepared_fingerprint_version&quot;: PREPARED_FINGERPRINT_VERSION,
+               **input_audit}
+    return prepared, details
+
+
+def make_features(observed):
+    # Build inputs from observations; injected drift also contaminates these lags.
+    &quot;&quot;&quot;Build eight features from UTC-indexed observations; CO2 lags use past readings only.&quot;&quot;&quot;
+    co2 = observed[&quot;Carbon dioxide&quot;]
+    hour = observed.index.hour+observed.index.minute/60+observed.index.second/3600
+    x = pd.DataFrame(index=observed.index)
+    x[&quot;co2_lag1&quot;] = co2.shift(1)  # Previous reading
+    x[&quot;co2_lag6&quot;] = co2.shift(6)  # Sixth previous reading, not necessarily one hour earlier
+    x[&quot;temperature&quot;] = observed[&quot;Temperature&quot;]
+    x[&quot;humidity&quot;] = observed[&quot;Humidity&quot;]
+    x[&quot;hour_sin&quot;] = np.sin(2*np.pi*hour/24)
+    x[&quot;hour_cos&quot;] = np.cos(2*np.pi*hour/24)
+    x[&quot;weekend&quot;] = (observed.index.dayofweek&gt;=5).astype(float)  # Keep the existing UTC encoding.
+    x[&quot;minutes_since_previous&quot;] = observed.index.to_series().diff().dt.total_seconds()/60
+    return x
+
+
+HISTORY_FEATURES=[&quot;co2_lag1&quot;,&quot;co2_lag6&quot;,&quot;temperature&quot;,&quot;humidity&quot;,&quot;hour_sin&quot;,&quot;hour_cos&quot;,&quot;weekend&quot;,&quot;minutes_since_previous&quot;]
+
+def chronological_split(original,max_gap_minutes=20,minimum_rows=500):
+    &quot;&quot;&quot;Construct a common 60/20/20 time split for both input groups.
+
+    Args:
+        original: Sorted UTC-indexed complete sensor channels.
+        max_gap_minutes: Largest allowed gap within the six-reading history.
+        minimum_rows: Required eligible observations.
+    Returns:
+        dict: Feature frame, eligible/train/validation/test indices and row labels.
+    Raises:
+        ValueError: Too few eligible observations or invalid gap setting.
+    &quot;&quot;&quot;
+    if not np.isfinite(max_gap_minutes) or max_gap_minutes&lt;=0:
+        raise ValueError(&#x27;max_gap_minutes must be positive and finite.&#x27;)
+    features=make_features(original)
+    gaps=original.index.to_series().diff().dt.total_seconds()/60
+    eligible=features[HISTORY_FEATURES].notna().all(axis=1)&amp;(gaps.rolling(6).max()&lt;=max_gap_minutes)
+    index=original.index[eligible]
+    if len(index)&lt;minimum_rows:raise ValueError(&#x27;Too few eligible observations.&#x27;)
+    n_train,n_train_val=int(.6*len(index)),int(.8*len(index))
+    train,validation,test=index[:n_train],index[n_train:n_train_val],index[n_train_val:]
+    split=pd.Series(&#x27;excluded&#x27;,index=original.index,name=&#x27;split&#x27;)
+    split.loc[train],split.loc[validation],split.loc[test]=&#x27;train&#x27;,&#x27;validation&#x27;,&#x27;test&#x27;
+    return dict(features=features,eligible=index,train=train,validation=validation,test=test,split=split)
+</code></pre></details></body></html>

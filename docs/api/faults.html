@@ -1,0 +1,166 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>faults API</title><style>body{font:16px/1.55 system-ui,sans-serif;color:#18232c;background:#fff;max-width:1050px;margin:36px auto;padding:0 24px}
+h1,h2,h3{color:#000;line-height:1.25}nav{margin:20px 0}nav a{margin-right:14px}a{color:#165d91}
+pre{background:#f2f4f6;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:Consolas,monospace}
+section{margin:32px 0}summary{cursor:pointer;color:#165d91}footer{margin:40px 0;color:#4a555f}</style><body><nav><a href="index.html">API home</a><a href="analysis.html">analysis</a><a href="data.html">data</a><a href="detectors.html">detectors</a><a href="evaluation.html">evaluation</a><a href="extraction.html">extraction</a><a href="faults.html">faults</a><a href="models.html">models</a><a href="project.html">project</a></nav><h1>faults API</h1><p>Reproducible finite additive faults; original references stay outside inference.</p><section id="write_scenario"><h2><code>write_scenario(name, observed, offsets, events, *, original, split, run_dir, fault_seed=42, recovery_readings=30, source_hash=&#x27;&#x27;)</code></h2><pre>Save an observation copy, ppm offsets and separate evaluation labels; return a scenario dictionary. Detectors receive no labels.</pre></section><section id="WindowPlanner"><h2><code>WindowPlanner</code></h2><pre>Cache fixed plans by duration, count, fault seed and partition.
+
+Args:
+    original: Complete UTC-indexed sensor frame.
+    split: Chronological train/validation/test row labels.
+    max_gap_minutes: Continuity cutoff in minutes.
+    recovery_readings: Unmodified readings reserved after every event.</pre><section id="__init__"><h3><code>__init__(self, original, split, max_gap_minutes=20, recovery_readings=30)</code></h3><pre>See the source and experiment notebook for this component.</pre></section><section id="plan"><h3><code>plan(self, duration, count, seed, partition=&#x27;test&#x27;)</code></h3><pre>Return copied event dictionaries; seed controls placement and sign.
+
+Args:
+    duration: Positive active reading count, not elapsed minutes.
+    count: Positive number of separated events.
+    seed: Fault placement RNG seed.
+    partition: &#x27;test&#x27; or &#x27;validation&#x27;; never &#x27;train&#x27;.
+Returns:
+    list[dict]: event_id, sign, active timestamps and recovery timestamps.
+Raises:
+    ValueError: Invalid settings or insufficient continuous windows.</pre></section></section><section id="inject_fault"><h2><code>inject_fault(original, events, kind, magnitude_ppm)</code></h2><pre>Modify a copy of CO2 only; retain the original frame unchanged.
+
+Args:
+    original: Observations with a Carbon dioxide column in ppm.
+    events: Fixed event plans; signs are +1 or -1.
+    kind: &#x27;spike&#x27;, &#x27;drift&#x27; or &#x27;bias&#x27;.
+    magnitude_ppm: Positive absolute offset, final offset for a drift ramp.
+Returns:
+    (observed, offsets): Faulted frame and signed offsets Series in ppm.
+Raises:
+    ValueError: Invalid type/magnitude, overlapping events or a multi-reading spike.
+    KeyError: An event timestamp is absent.</pre></section><details><summary>Inspect module source</summary><pre><code>&quot;&quot;&quot;Reproducible finite additive faults; original references stay outside inference.&quot;&quot;&quot;
+import json
+import numpy as np
+import pandas as pd
+from .project import file_sha256
+
+def _plan_windows(original,split,duration,count,seed,partition=&quot;test&quot;,max_gap_minutes=20,recovery_readings=30):
+    &quot;&quot;&quot;Plan test events and recovery indices. duration/count are positive integers; seed controls locations/signs.
+
+    Returns:
+        list[dict]: event_id, sign, active and recovery.
+    Raises:
+        ValueError: Invalid counts or insufficient separated continuous windows.&quot;&quot;&quot;
+    if type(duration) is not int or type(count) is not int or duration &lt; 1 or count &lt; 1:
+        raise ValueError(&#x27;Reading counts, event counts and minimum_rows must be positive integers.&#x27;)
+    if partition not in (&quot;test&quot;, &quot;validation&quot;):
+        raise ValueError(&quot;Only validation or test fault copies are supported.&quot;)
+    positions = np.flatnonzero(split.to_numpy()==partition)
+    candidates = []
+    for start in range(6,len(positions)-duration-recovery_readings+1):
+        context = positions[start-6:start+duration+recovery_readings]
+        if not np.all(np.diff(context)==1):
+            continue
+        times = original.index[context]
+        if (times.to_series().diff().dt.total_seconds().dropna()/60&lt;=max_gap_minutes).all():
+            candidates.append(start)
+    slots,next_allowed = [],0
+    for start in candidates:
+        if start&gt;=next_allowed:
+            slots.append(start)
+            next_allowed=start+duration+recovery_readings
+    if count&lt;1 or duration&lt;1 or len(slots)&lt;count:
+        raise ValueError(f&quot;Only {len(slots)} usable windows found; reduce event count or duration.&quot;)
+    rng=np.random.default_rng(seed)
+    chosen=sorted(rng.choice(slots,size=count,replace=False).tolist())
+    events=[]
+    for event_id,start in enumerate(chosen,1):
+        active=original.index[positions[start:start+duration]]
+        recovery=original.index[positions[start+duration:start+duration+recovery_readings]]
+        events.append({&quot;event_id&quot;:event_id,&quot;sign&quot;:int(rng.choice([-1,1])),
+                       &quot;active&quot;:active,&quot;recovery&quot;:recovery})
+    return events
+
+
+def write_scenario(name,observed,offsets,events,*,original,split,run_dir,fault_seed=42,recovery_readings=30,source_hash=&quot;&quot;):
+    # Store the evaluation reference separately; detectors never receive it.
+    &quot;&quot;&quot;Save an observation copy, ppm offsets and separate evaluation labels; return a scenario dictionary. Detectors receive no labels.&quot;&quot;&quot;
+    reference=pd.DataFrame({&quot;original_co2_ppm&quot;:original[&quot;Carbon dioxide&quot;],
+                            &quot;offset_ppm&quot;:offsets,&quot;event_id&quot;:0},index=original.index)
+    for event in events:
+        reference.loc[event[&quot;active&quot;],&quot;event_id&quot;]=event[&quot;event_id&quot;]
+    assert (offsets.loc[split!=&quot;test&quot;]==0).all()
+    pd.testing.assert_frame_equal(observed.loc[split!=&quot;test&quot;],original.loc[split!=&quot;test&quot;])
+    pd.testing.assert_frame_equal(observed.drop(columns=&quot;Carbon dioxide&quot;),original.drop(columns=&quot;Carbon dioxide&quot;))
+    np.testing.assert_allclose(observed[&quot;Carbon dioxide&quot;]-original[&quot;Carbon dioxide&quot;],offsets,atol=1e-10,rtol=0)
+    folder=run_dir/&quot;fault_data&quot;/name
+    folder.mkdir(parents=True,exist_ok=False)
+    observations=observed.reset_index().copy()
+    observations[&quot;split&quot;]=split.to_numpy()
+    observations.to_csv(folder/&quot;observations.csv&quot;,index=False)
+    reference.to_csv(folder/&quot;reference_labels.csv&quot;)
+    events_saved=[{&quot;event_id&quot;:e[&quot;event_id&quot;],&quot;sign&quot;:e[&quot;sign&quot;],
+                   &quot;active_timestamps_utc&quot;:[t.isoformat() for t in e[&quot;active&quot;]],
+                   &quot;recovery_timestamps_utc&quot;:[t.isoformat() for t in e[&quot;recovery&quot;]]} for e in events]
+    manifest={&quot;kind&quot;:name,&quot;events&quot;:events_saved,&quot;source_sha256&quot;:source_hash,
+              &quot;fault_seed&quot;:fault_seed,&quot;recovery_readings&quot;:recovery_readings,
+              &quot;note&quot;:&#x27;Only CO2 bias is simulated; the original health status is unknown.&#x27;}
+    (folder/&quot;manifest.json&quot;).write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding=&quot;utf-8&quot;)
+    print(name,&quot;:&quot;,len(events),&#x27;events; only test copies are modified, and evaluation references are stored separately.&#x27;)
+    return {&quot;name&quot;:name,&quot;observations&quot;:observed,&quot;reference&quot;:reference,&quot;events&quot;:events,&quot;folder&quot;:folder}
+
+
+
+class WindowPlanner:
+    &quot;&quot;&quot;Cache fixed plans by duration, count, fault seed and partition.
+
+    Args:
+        original: Complete UTC-indexed sensor frame.
+        split: Chronological train/validation/test row labels.
+        max_gap_minutes: Continuity cutoff in minutes.
+        recovery_readings: Unmodified readings reserved after every event.
+    &quot;&quot;&quot;
+    def __init__(self,original,split,max_gap_minutes=20,recovery_readings=30):
+        self.original,self.split=original,split
+        self.max_gap_minutes,self.recovery_readings=max_gap_minutes,recovery_readings
+        self._cache={}
+
+    def plan(self,duration,count,seed,partition=&#x27;test&#x27;):
+        &quot;&quot;&quot;Return copied event dictionaries; seed controls placement and sign.
+
+        Args:
+            duration: Positive active reading count, not elapsed minutes.
+            count: Positive number of separated events.
+            seed: Fault placement RNG seed.
+            partition: &#x27;test&#x27; or &#x27;validation&#x27;; never &#x27;train&#x27;.
+        Returns:
+            list[dict]: event_id, sign, active timestamps and recovery timestamps.
+        Raises:
+            ValueError: Invalid settings or insufficient continuous windows.
+        &quot;&quot;&quot;
+        key=(duration,count,seed,partition)
+        if key not in self._cache:
+            self._cache[key]=_plan_windows(self.original,self.split,duration,count,seed,partition,
+                                         self.max_gap_minutes,self.recovery_readings)
+        return [{**e,&#x27;active&#x27;:e[&#x27;active&#x27;].copy(),&#x27;recovery&#x27;:e[&#x27;recovery&#x27;].copy()} for e in self._cache[key]]
+
+def inject_fault(original,events,kind,magnitude_ppm):
+    &quot;&quot;&quot;Modify a copy of CO2 only; retain the original frame unchanged.
+
+    Args:
+        original: Observations with a Carbon dioxide column in ppm.
+        events: Fixed event plans; signs are +1 or -1.
+        kind: &#x27;spike&#x27;, &#x27;drift&#x27; or &#x27;bias&#x27;.
+        magnitude_ppm: Positive absolute offset, final offset for a drift ramp.
+    Returns:
+        (observed, offsets): Faulted frame and signed offsets Series in ppm.
+    Raises:
+        ValueError: Invalid type/magnitude, overlapping events or a multi-reading spike.
+        KeyError: An event timestamp is absent.
+    &quot;&quot;&quot;
+    if kind not in (&#x27;spike&#x27;,&#x27;drift&#x27;,&#x27;bias&#x27;) or not np.isfinite(magnitude_ppm) or magnitude_ppm&lt;=0:
+        raise ValueError(&#x27;Require a known fault type and positive finite magnitude.&#x27;)
+    offsets=pd.Series(0.0,index=original.index)
+    used=set()
+    for event in events:
+        active=event[&#x27;active&#x27;]
+        if len(active)==0 or (kind==&#x27;spike&#x27; and len(active)!=1) or event[&#x27;sign&#x27;] not in (-1,1):
+            raise ValueError(&#x27;Check active reading count and event sign.&#x27;)
+        if used.intersection(active):raise ValueError(&#x27;Fault windows overlap.&#x27;)
+        used.update(active)
+        profile=np.arange(1,len(active)+1)/len(active) if kind==&#x27;drift&#x27; else np.ones(len(active))
+        offsets.loc[active]=event[&#x27;sign&#x27;]*magnitude_ppm*profile
+    observed=original.copy()
+    observed[&#x27;Carbon dioxide&#x27;]+=offsets
+    return observed,offsets
+</code></pre></details></body></html>

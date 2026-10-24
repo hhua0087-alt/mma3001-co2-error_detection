@@ -1,0 +1,60 @@
+{
+  "TARGET_SENSOR": "6012002000869",
+  "FAULT_SEED": 42,
+  "MODEL_SEED": 42,
+  "SPIKE_PPM": 60.0,
+  "SPIKE_COUNT": 20,
+  "DRIFT_PPM": 60.0,
+  "DRIFT_READINGS": 24,
+  "DRIFT_COUNT": 8,
+  "BIAS_PPM": 60.0,
+  "BIAS_READINGS": 24,
+  "BIAS_COUNT": 8,
+  "MAX_GAP_MINUTES": 20,
+  "RECOVERY_READINGS": 30,
+  "THRESHOLD_QUANTILE": 0.99,
+  "TREE_MAX_DEPTH": 5,
+  "TREE_MIN_SAMPLES_LEAF": 50,
+  "CUSUM_K_FRACTION": 0.1,
+  "DEV_SEEDS": [
+    11,
+    29,
+    73
+  ],
+  "DEV_MAGNITUDES": [
+    20.0,
+    40.0,
+    60.0
+  ],
+  "DEV_DURATIONS": [
+    12,
+    24,
+    48
+  ],
+  "DEV_SPIKE_COUNT": 10,
+  "DEV_LONG_COUNT": 4,
+  "KAPPA_GRID": [
+    0.025,
+    0.05,
+    0.1,
+    0.2,
+    0.4,
+    0.8,
+    1.2
+  ],
+  "TEST_SEEDS": [
+    7,
+    42,
+    99
+  ],
+  "TEST_MAGNITUDES": [
+    20.0,
+    40.0,
+    60.0
+  ],
+  "TEST_DURATIONS": [
+    12,
+    24,
+    48
+  ]
+}

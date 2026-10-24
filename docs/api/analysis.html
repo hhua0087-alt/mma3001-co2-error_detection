@@ -1,0 +1,87 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>analysis API</title><style>body{font:16px/1.55 system-ui,sans-serif;color:#18232c;background:#fff;max-width:1050px;margin:36px auto;padding:0 24px}
+h1,h2,h3{color:#000;line-height:1.25}nav{margin:20px 0}nav a{margin-right:14px}a{color:#165d91}
+pre{background:#f2f4f6;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:Consolas,monospace}
+section{margin:32px 0}summary{cursor:pointer;color:#165d91}footer{margin:40px 0;color:#4a555f}</style><body><nav><a href="index.html">API home</a><a href="analysis.html">analysis</a><a href="data.html">data</a><a href="detectors.html">detectors</a><a href="evaluation.html">evaluation</a><a href="extraction.html">extraction</a><a href="faults.html">faults</a><a href="models.html">models</a><a href="project.html">project</a></nav><h1>analysis API</h1><p>Tables and plots connecting the saved experiment to the report&#x27;s conclusions.</p><section id="magnitude_summary"><h2><code>magnitude_summary(sensitivity, long_duration=24)</code></h2><pre>Pool three placements at a fixed duration, retaining raw and paired hits.
+
+Args:
+    sensitivity: Saved six-detector test_sensitivity.csv DataFrame.
+    long_duration: Drift/bias reading count; spikes always last one reading.
+Returns:
+    DataFrame: Counts and observed per-seed recall range, not confidence limits.</pre></section><section id="seed_table"><h2><code>seed_table(sensitivity, magnitude=60, long_duration=24)</code></h2><pre>Show each fault placement separately under common magnitude and duration.
+
+Args:
+    sensitivity: Saved sensitivity DataFrame.
+    magnitude: Absolute injected offset in ppm, final offset for a drift.
+    long_duration: Number of active drift/bias readings.
+Returns:
+    DataFrame: Event hits and denominators for every detector and seed.</pre></section><section id="plot_magnitude_sensitivity"><h2><code>plot_magnitude_sensitivity(sensitivity, long_duration=24)</code></h2><pre>Plot the three NN alarm rules with observed placement ranges.
+
+Args:
+    sensitivity: Saved six-detector sensitivity DataFrame.
+    long_duration: Drift/bias length held fixed across amplitudes.
+Returns:
+    matplotlib.figure.Figure: Three panels; error bars are min/max, not CIs.</pre></section><details><summary>Inspect module source</summary><pre><code>&quot;&quot;&quot;Tables and plots connecting the saved experiment to the report&#x27;s conclusions.&quot;&quot;&quot;
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+METHODS=[&#x27;change_rule&#x27;,&#x27;history_regression&#x27;,&#x27;history_tree&#x27;,&#x27;history_neural&#x27;,&#x27;history_neural_cusum&#x27;,&#x27;nn_threshold_cusum&#x27;]
+FOCUS=[&#x27;history_neural&#x27;,&#x27;history_neural_cusum&#x27;,&#x27;nn_threshold_cusum&#x27;]
+
+
+def magnitude_summary(sensitivity,long_duration=24):
+    &quot;&quot;&quot;Pool three placements at a fixed duration, retaining raw and paired hits.
+
+    Args:
+        sensitivity: Saved six-detector test_sensitivity.csv DataFrame.
+        long_duration: Drift/bias reading count; spikes always last one reading.
+    Returns:
+        DataFrame: Counts and observed per-seed recall range, not confidence limits.
+    &quot;&quot;&quot;
+    common=sensitivity[(sensitivity.scenario==&#x27;spike&#x27;)|(sensitivity.duration_readings==long_duration)].copy()
+    common[&#x27;recall&#x27;]=common.detected/common.events
+    return common.groupby([&#x27;scenario&#x27;,&#x27;magnitude_ppm&#x27;,&#x27;method&#x27;],as_index=False).agg(
+        events=(&#x27;events&#x27;,&#x27;sum&#x27;),detected=(&#x27;detected&#x27;,&#x27;sum&#x27;),
+        paired_additional_events=(&#x27;paired_additional_events&#x27;,&#x27;sum&#x27;),
+        mean_recall=(&#x27;recall&#x27;,&#x27;mean&#x27;),min_seed_recall=(&#x27;recall&#x27;,&#x27;min&#x27;),max_seed_recall=(&#x27;recall&#x27;,&#x27;max&#x27;))
+
+
+def seed_table(sensitivity,magnitude=60,long_duration=24):
+    &quot;&quot;&quot;Show each fault placement separately under common magnitude and duration.
+
+    Args:
+        sensitivity: Saved sensitivity DataFrame.
+        magnitude: Absolute injected offset in ppm, final offset for a drift.
+        long_duration: Number of active drift/bias readings.
+    Returns:
+        DataFrame: Event hits and denominators for every detector and seed.
+    &quot;&quot;&quot;
+    return sensitivity[(sensitivity.magnitude_ppm==magnitude)&amp;
+                       ((sensitivity.scenario==&#x27;spike&#x27;)|(sensitivity.duration_readings==long_duration))][
+        [&#x27;scenario&#x27;,&#x27;method&#x27;,&#x27;seed&#x27;,&#x27;events&#x27;,&#x27;detected&#x27;,&#x27;paired_additional_events&#x27;]].sort_values([&#x27;scenario&#x27;,&#x27;method&#x27;,&#x27;seed&#x27;])
+
+
+def plot_magnitude_sensitivity(sensitivity,long_duration=24):
+    &quot;&quot;&quot;Plot the three NN alarm rules with observed placement ranges.
+
+    Args:
+        sensitivity: Saved six-detector sensitivity DataFrame.
+        long_duration: Drift/bias length held fixed across amplitudes.
+    Returns:
+        matplotlib.figure.Figure: Three panels; error bars are min/max, not CIs.
+    &quot;&quot;&quot;
+    table=magnitude_summary(sensitivity,long_duration)
+    fig,axes=plt.subplots(1,3,figsize=(11,3.8),sharey=True,layout=&#x27;constrained&#x27;)
+    labels=[&#x27;NN point&#x27;,&#x27;Original CUSUM&#x27;,&#x27;Selected CUSUM&#x27;]
+    for ax,kind in zip(axes,[&#x27;spike&#x27;,&#x27;drift&#x27;,&#x27;bias&#x27;]):
+        for key,label,marker in zip(FOCUS,labels,[&#x27;o&#x27;,&#x27;s&#x27;,&#x27;^&#x27;]):
+            d=table[(table.scenario==kind)&amp;(table.method==key)].sort_values(&#x27;magnitude_ppm&#x27;)
+            mean=d.mean_recall.to_numpy()*100
+            low=d.min_seed_recall.to_numpy()*100;high=d.max_seed_recall.to_numpy()*100
+            ax.errorbar(d.magnitude_ppm,mean,yerr=[mean-low,high-mean],marker=marker,capsize=3,label=label)
+        ax.set(title=kind.capitalize(),xlabel=&#x27;Injected magnitude (ppm)&#x27;,ylim=(-5,105),xticks=[20,40,60])
+        ax.grid(alpha=.2)
+    axes[0].set_ylabel(&#x27;Event recall (%)&#x27;)
+    axes[0].legend(fontsize=8)
+    return fig
+</code></pre></details></body></html>

@@ -1,0 +1,79 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>evaluation API</title><style>body{font:16px/1.55 system-ui,sans-serif;color:#18232c;background:#fff;max-width:1050px;margin:36px auto;padding:0 24px}
+h1,h2,h3{color:#000;line-height:1.25}nav{margin:20px 0}nav a{margin-right:14px}a{color:#165d91}
+pre{background:#f2f4f6;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:Consolas,monospace}
+section{margin:32px 0}summary{cursor:pointer;color:#165d91}footer{margin:40px 0;color:#4a555f}</style><body><nav><a href="index.html">API home</a><a href="analysis.html">analysis</a><a href="data.html">data</a><a href="detectors.html">detectors</a><a href="evaluation.html">evaluation</a><a href="extraction.html">extraction</a><a href="faults.html">faults</a><a href="models.html">models</a><a href="project.html">project</a></nav><h1>evaluation API</h1><p>Post-inference evaluation using labels that are never inputs to prediction.</p><section id="evaluate_alarm_events"><h2><code>evaluate_alarm_events(alarm, original_alarm, events)</code></h2><pre>Evaluate event hits, paired additions and elapsed delay after inference.
+
+Args:
+    alarm: Boolean Series for the faulted test replay.
+    original_alarm: Boolean Series from the unmodified replay at the same times.
+    events: Separate dictionaries with event_id, sign, active and recovery indices.
+Returns:
+    (summary, details): Event/reading fractions and per-event outcomes. An event
+    needs one active alarm. A paired addition needs one same-time new alarm.
+    Missed-event delay is None, never zero. Recovery alarms do not rescue misses.
+Raises:
+    ValueError: There are no events or indices differ.
+    KeyError: A labelled timestamp is not monitored.</pre></section><section id="score_development_events"><h2><code>score_development_events(alarm, clean_alarm, events)</code></h2><pre>Score separate development labels after inference; missed events incur unit delay cost.</pre></section><details><summary>Inspect module source</summary><pre><code>&quot;&quot;&quot;Post-inference evaluation using labels that are never inputs to prediction.&quot;&quot;&quot;
+import numpy as np
+import pandas as pd
+
+
+def evaluate_alarm_events(alarm, original_alarm, events):
+    &quot;&quot;&quot;Evaluate event hits, paired additions and elapsed delay after inference.
+
+    Args:
+        alarm: Boolean Series for the faulted test replay.
+        original_alarm: Boolean Series from the unmodified replay at the same times.
+        events: Separate dictionaries with event_id, sign, active and recovery indices.
+    Returns:
+        (summary, details): Event/reading fractions and per-event outcomes. An event
+        needs one active alarm. A paired addition needs one same-time new alarm.
+        Missed-event delay is None, never zero. Recovery alarms do not rescue misses.
+    Raises:
+        ValueError: There are no events or indices differ.
+        KeyError: A labelled timestamp is not monitored.
+    &quot;&quot;&quot;
+    if not events or not alarm.index.equals(original_alarm.index):
+        raise ValueError(&quot;Require events and identically indexed alarm replays.&quot;)
+    active_mask = pd.Series(False, index=alarm.index)
+    recovery_mask = pd.Series(False, index=alarm.index)
+    details = []
+    for event in events:
+        active = event[&quot;active&quot;]
+        active_mask.loc[active] = True
+        recovery_mask.loc[event[&quot;recovery&quot;]] = True
+        hits = active[alarm.loc[active].to_numpy()]
+        added = bool((alarm.loc[active] &amp; ~original_alarm.loc[active]).any())
+        delay = (hits[0]-active[0]).total_seconds()/60 if len(hits) else None
+        details.append({&quot;event_id&quot;: event[&quot;event_id&quot;], &quot;sign&quot;: event[&quot;sign&quot;],
+                        &quot;detected&quot;: bool(len(hits)), &quot;additional_alarm&quot;: added,
+                        &quot;first_alert_delay_minutes&quot;: delay})
+    outside = ~active_mask &amp; ~recovery_mask
+    detected = sum(int(row[&quot;detected&quot;]) for row in details)
+    additional = sum(int(row[&quot;additional_alarm&quot;]) for row in details)
+    delays = [row[&quot;first_alert_delay_minutes&quot;] for row in details if row[&quot;detected&quot;]]
+    summary = {&quot;events&quot;: len(events), &quot;detected&quot;: detected, &quot;event_recall&quot;: detected/len(events),
+               &quot;paired_additional_events&quot;: additional,
+               &quot;paired_additional_event_fraction&quot;: additional/len(events),
+               &quot;reading_recall&quot;: float(alarm.loc[active_mask].mean()),
+               &quot;unmodified_test_alert_rate&quot;: float(original_alarm.mean()),
+               &quot;outside_fault_and_recovery_alert_rate&quot;: float(alarm.loc[outside].mean()) if outside.any() else None,
+               &quot;recovery_alert_rate&quot;: float(alarm.loc[recovery_mask].mean()) if recovery_mask.any() else None,
+               &quot;median_first_alert_delay_minutes&quot;: float(np.median(delays)) if delays else None}
+    return summary, details
+
+
+def score_development_events(alarm, clean_alarm, events):
+    &quot;&quot;&quot;Score separate development labels after inference; missed events incur unit delay cost.&quot;&quot;&quot;
+    additional, detected, costs = 0, 0, []
+    for event in events:
+        active = event[&quot;active&quot;]
+        hits = np.flatnonzero(alarm.loc[active].to_numpy())
+        added = np.flatnonzero((alarm.loc[active] &amp; ~clean_alarm.loc[active]).to_numpy())
+        detected += int(len(hits) &gt; 0)
+        additional += int(len(added) &gt; 0)
+        costs.append(float(added[0]/len(active)) if len(added) else 1.0)
+    return {&quot;event_recall&quot;: detected/len(events), &quot;additional_event_recall&quot;: additional/len(events),
+            &quot;capped_additional_delay_fraction&quot;: float(np.mean(costs))}
+
+</code></pre></details></body></html>

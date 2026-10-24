@@ -1,28 +1,14 @@
-"""Extract MSI environmental measurements directly from the supplied CSV.
+"""Stream the course environmental CSV into the documented long-format input.
 
-Example (PowerShell)::
-
-    python extract_env.py --sensor 6012002000869 --variable "Carbon dioxide"
-
-The source CSV is read only. Output is a long-format CSV with one row per
-measurement, so the choice of a later modelling question remains open.
+The source is read only. JSON timestamps are Unix seconds converted to UTC.
+Malformed source rows are counted; preparation subsequently validates numeric
+channels, complete timestamps and conflicting duplicates.
 """
-
-import argparse
 import csv
-from datetime import datetime, timezone
-import io
-import json
-import os
+from datetime import datetime,timezone
+import io,json,os,tempfile
 from pathlib import Path
-import tempfile
-
-
-DEFAULT_CSV = Path(
-    r"E:\Study\MMA3001\project\MMA3001 Dataset - MSI Occupancy and Environmental -20260927T041718Z-1-001\MMA3001 Dataset - MSI Occupancy and Environmental\5EnvSensor_MayToDec2024_180kRows\5EnvSensor_MayToDec2024_180kRows.csv"
-)
-OUTPUT_COLUMNS = ("sensor_id", "timestamp_utc", "variable", "unit", "value", "source_row_id")
-
+OUTPUT_COLUMNS=("sensor_id","timestamp_utc","variable","unit","value","source_row_id")
 
 def measurements(row, variable_filter=None):
     """Convert one raw CSV row's JSON into measurement records.
@@ -64,7 +50,27 @@ def measurements(row, variable_filter=None):
 
 
 def extract(source, output, sensor, variable_filter, progress_every, force):
-    """Stream the environmental CSV and write selected readings to a new CSV."""
+    """Stream an authorized raw CSV into a new long-format sensor extract.
+
+    Args:
+        source: Raw CSV Path with id, sensorid and jsondata fields.
+        output: Destination CSV Path, different from the raw source.
+        sensor: String sensor identifier.
+        variable_filter: Optional exact channel name; None retains all channels.
+        progress_every: Positive number of source rows between progress messages.
+        force: Whether an existing destination may be replaced.
+    Returns:
+        None: Writes the six-column extract and prints actual extraction counts.
+    Raises:
+        ValueError: Invalid source schema, progress setting, identical paths or no matching measurements.
+        FileNotFoundError: Source is missing.
+        FileExistsError: Destination exists and force is False.
+    """
+    source,output=Path(source),Path(output)
+    if source.resolve()==output.resolve():
+        raise ValueError('Source and destination must differ; the raw source is read only.')
+    if type(progress_every) is not int or progress_every<1:
+        raise ValueError('progress_every must be a positive integer.')
     if not source.is_file():
         raise FileNotFoundError(f"Input CSV not found: {source}")
     if output.exists() and not force:
@@ -116,25 +122,3 @@ def extract(source, output, sensor, variable_filter, progress_every, force):
     print(f"Invalid JSON rows for this sensor: {bad_json_rows:,}")
     print(f"Saved: {output.resolve()}")
 
-
-def main():
-    """Parse command-line options and start extraction."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=DEFAULT_CSV, help="Environmental sensor CSV")
-    parser.add_argument("--sensor", default="6012002000869", help="Environmental sensor ID")
-    parser.add_argument("--variable", help='Exact variable name, e.g. "Carbon dioxide"; default: all')
-    parser.add_argument("--output", type=Path, help="Destination CSV; default: data/processed/env_<sensor>_direct.csv")
-    parser.add_argument("--progress-every", type=int, default=10000, help="Show progress every N source rows")
-    parser.add_argument("--force", action="store_true", help="Replace an existing output file")
-    args = parser.parse_args()
-    if args.progress_every < 1:
-        parser.error("--progress-every must be at least 1")
-    output = args.output or Path("data/processed") / f"env_{args.sensor}_direct.csv"
-    try:
-        extract(args.input, output, args.sensor, args.variable, args.progress_every, args.force)
-    except (FileNotFoundError, FileExistsError, ValueError) as exc:
-        parser.exit(1, f"Error: {exc}\n")
-
-
-if __name__ == "__main__":
-    main()

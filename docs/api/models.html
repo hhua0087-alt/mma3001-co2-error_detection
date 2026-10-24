@@ -1,0 +1,174 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>models API</title><style>body{font:16px/1.55 system-ui,sans-serif;color:#18232c;background:#fff;max-width:1050px;margin:36px auto;padding:0 24px}
+h1,h2,h3{color:#000;line-height:1.25}nav{margin:20px 0}nav a{margin-right:14px}a{color:#165d91}
+pre{background:#f2f4f6;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:Consolas,monospace}
+section{margin:32px 0}summary{cursor:pointer;color:#165d91}footer{margin:40px 0;color:#4a555f}</style><body><nav><a href="index.html">API home</a><a href="analysis.html">analysis</a><a href="data.html">data</a><a href="detectors.html">detectors</a><a href="evaluation.html">evaluation</a><a href="extraction.html">extraction</a><a href="faults.html">faults</a><a href="models.html">models</a><a href="project.html">project</a></nav><h1>models API</h1><p>Training-only scaling and the fixed regression and neural-network recipes.</p><section id="neural_settings"><h2><code>neural_settings(seed=42)</code></h2><pre>Return the frozen NN recipe used for both input groups.
+
+Args:
+    seed: Model initialization seed, separate from fault placement seeds.
+Returns:
+    dict: MLPRegressor parameters; no internal early-stopping split is used.</pre></section><section id="NeuralFit"><h2><code>NeuralFit</code></h2><pre>A fitted NN together with training-only scaling, warnings and batch fit time.
+
+x_mean/x_scale describe input columns; y_mean/y_scale describe CO2 in ppm.
+The trained object never refits when predict is called.</pre><section id="predict"><h3><code>predict(self, features)</code></h3><pre>Predict CO2 ppm from a finite DataFrame using the recorded column order.
+
+Args:
+    features: Eligible input rows; columns must include all fitted inputs.
+Returns:
+    pandas.Series: Predictions in ppm with the supplied row index.
+Raises:
+    ValueError: Inputs are not finite.
+    KeyError: A fitted column is missing.</pre></section><section id="metadata"><h3><code>metadata(self)</code></h3><pre>Return serializable fit settings, weight digest and warnings.
+
+Returns:
+    dict: Parameter count, epochs and provenance; no measurements or weights.</pre></section></section><section id="fit_neural"><h2><code>fit_neural(train_x, train_y, seed=42, settings=None)</code></h2><pre>Fit the fixed NN with means and scales learned only from supplied training rows.
+
+Args:
+    train_x: Training feature DataFrame; no validation/test rows are passed.
+    train_y: Corresponding original CO2 Series in ppm.
+    seed: Initialization seed if settings is omitted.
+    settings: Optional fixed MLPRegressor configuration, not a search grid.
+Returns:
+    NeuralFit: Model, scalers, warnings and fit time.
+Raises:
+    ValueError: The target is constant/nonfinite or inputs are nonfinite.</pre></section><section id="predict_ols_features"><h2><code>predict_ols_features(model, features)</code></h2><pre>Apply fitted standardized OLS to a feature DataFrame without refitting.
+
+Args:
+    model: Mapping returned by fit_ols.
+    features: Eligible rows including all fitted input columns.
+Returns:
+    pandas.Series: Predicted CO2 in ppm with the supplied index.
+Raises:
+    KeyError: A fitted input column is missing.</pre></section><section id="fit_ols"><h2><code>fit_ols(train_x, y)</code></h2><pre>Fit standardized OLS on training X/y only; return columns, scaling and coefficients. Raise ValueError for rank deficiency.</pre></section><details><summary>Inspect module source</summary><pre><code>&quot;&quot;&quot;Training-only scaling and the fixed regression and neural-network recipes.&quot;&quot;&quot;
+from __future__ import annotations
+
+import hashlib
+import warnings
+from dataclasses import dataclass
+from time import perf_counter
+
+import numpy as np
+import pandas as pd
+from sklearn.neural_network import MLPRegressor
+from threadpoolctl import threadpool_limits
+
+
+def neural_settings(seed=42):
+    &quot;&quot;&quot;Return the frozen NN recipe used for both input groups.
+
+    Args:
+        seed: Model initialization seed, separate from fault placement seeds.
+    Returns:
+        dict: MLPRegressor parameters; no internal early-stopping split is used.
+    &quot;&quot;&quot;
+    return dict(hidden_layer_sizes=(16, 8), activation=&quot;relu&quot;, solver=&quot;adam&quot;,
+                alpha=.01, batch_size=128, learning_rate_init=.001, max_iter=400,
+                shuffle=False, random_state=seed, tol=1e-4, early_stopping=False,
+                n_iter_no_change=20)
+
+
+@dataclass
+class NeuralFit:
+    &quot;&quot;&quot;A fitted NN together with training-only scaling, warnings and batch fit time.
+
+    x_mean/x_scale describe input columns; y_mean/y_scale describe CO2 in ppm.
+    The trained object never refits when predict is called.
+    &quot;&quot;&quot;
+    model: MLPRegressor
+    columns: list
+    x_mean: np.ndarray
+    x_scale: np.ndarray
+    y_mean: float
+    y_scale: float
+    warnings: list
+    seconds: float
+
+    def predict(self, features):
+        &quot;&quot;&quot;Predict CO2 ppm from a finite DataFrame using the recorded column order.
+
+        Args:
+            features: Eligible input rows; columns must include all fitted inputs.
+        Returns:
+            pandas.Series: Predictions in ppm with the supplied row index.
+        Raises:
+            ValueError: Inputs are not finite.
+            KeyError: A fitted column is missing.
+        &quot;&quot;&quot;
+        values = features.loc[:, self.columns].to_numpy()
+        if not np.isfinite(values).all():
+            raise ValueError(&quot;Predictor inputs must be finite.&quot;)
+        with threadpool_limits(limits=1):
+            scaled = self.model.predict((values - self.x_mean) / self.x_scale)
+        return pd.Series(self.y_mean + self.y_scale * scaled, index=features.index)
+
+    def metadata(self):
+        &quot;&quot;&quot;Return serializable fit settings, weight digest and warnings.
+
+        Returns:
+            dict: Parameter count, epochs and provenance; no measurements or weights.
+        &quot;&quot;&quot;
+        arrays = self.model.coefs_ + self.model.intercepts_
+        return {&quot;features&quot;: self.columns, &quot;epochs&quot;: int(self.model.n_iter_),
+                &quot;parameters&quot;: sum(a.size for a in arrays), &quot;settings&quot;: self.model.get_params(),
+                &quot;weights_sha256&quot;: hashlib.sha256(b&quot;&quot;.join(a.tobytes() for a in arrays)).hexdigest(),
+                &quot;warnings&quot;: [str(w.message) for w in self.warnings], &quot;fit_on&quot;: &quot;original training only&quot;}
+
+
+def fit_neural(train_x, train_y, seed=42, settings=None):
+    &quot;&quot;&quot;Fit the fixed NN with means and scales learned only from supplied training rows.
+
+    Args:
+        train_x: Training feature DataFrame; no validation/test rows are passed.
+        train_y: Corresponding original CO2 Series in ppm.
+        seed: Initialization seed if settings is omitted.
+        settings: Optional fixed MLPRegressor configuration, not a search grid.
+    Returns:
+        NeuralFit: Model, scalers, warnings and fit time.
+    Raises:
+        ValueError: The target is constant/nonfinite or inputs are nonfinite.
+    &quot;&quot;&quot;
+    started = perf_counter()
+    x = train_x.to_numpy()
+    if not np.isfinite(x).all() or not np.isfinite(train_y.to_numpy()).all():
+        raise ValueError(&quot;Training inputs and target must be finite.&quot;)
+    x_mean, x_scale = x.mean(axis=0), x.std(axis=0)
+    x_scale[x_scale == 0] = 1
+    y_mean, y_scale = float(train_y.mean()), float(train_y.std(ddof=0))
+    if y_scale &lt;= 0:
+        raise ValueError(&quot;Training CO2 target must vary.&quot;)
+    model = MLPRegressor(**(settings if settings is not None else neural_settings(seed)))
+    with warnings.catch_warnings(record=True) as caught, threadpool_limits(limits=1):
+        warnings.simplefilter(&quot;always&quot;)
+        model.fit((x - x_mean) / x_scale, (train_y.to_numpy() - y_mean) / y_scale)
+    return NeuralFit(model, list(train_x.columns), x_mean, x_scale, y_mean, y_scale,
+                     list(caught), perf_counter() - started)
+
+
+def predict_ols_features(model, features):
+    &quot;&quot;&quot;Apply fitted standardized OLS to a feature DataFrame without refitting.
+
+    Args:
+        model: Mapping returned by fit_ols.
+        features: Eligible rows including all fitted input columns.
+    Returns:
+        pandas.Series: Predicted CO2 in ppm with the supplied index.
+    Raises:
+        KeyError: A fitted input column is missing.
+    &quot;&quot;&quot;
+    x = features.loc[:, model[&quot;columns&quot;]]
+    design = np.column_stack([np.ones(len(x)), (x.to_numpy()-model[&quot;mean&quot;])/model[&quot;scale&quot;]])
+    return pd.Series(design @ model[&quot;coefficients&quot;], index=x.index)
+
+
+def fit_ols(train_x, y):
+    # train_x and y come from original training rows; scaling uses only these rows.
+    &quot;&quot;&quot;Fit standardized OLS on training X/y only; return columns, scaling and coefficients. Raise ValueError for rank deficiency.&quot;&quot;&quot;
+    mean=train_x.mean().to_numpy()
+    scale=train_x.std(ddof=0).to_numpy().copy()
+    scale[scale==0]=1
+    design=np.column_stack([np.ones(len(train_x)),(train_x.to_numpy()-mean)/scale])
+    coefficients,_,rank,_=np.linalg.lstsq(design,y.to_numpy(),rcond=None)
+    if rank&lt;design.shape[1]:
+        raise ValueError(&#x27;Training features are constant or linearly dependent; inspect or remove the affected feature.&#x27;)
+    return {&quot;columns&quot;:list(train_x.columns),&quot;mean&quot;:mean,&quot;scale&quot;:scale,&quot;coefficients&quot;:coefficients}
+
+</code></pre></details></body></html>

@@ -1,0 +1,207 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>project API</title><style>body{font:16px/1.55 system-ui,sans-serif;color:#18232c;background:#fff;max-width:1050px;margin:36px auto;padding:0 24px}
+h1,h2,h3{color:#000;line-height:1.25}nav{margin:20px 0}nav a{margin-right:14px}a{color:#165d91}
+pre{background:#f2f4f6;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere}code{font-family:Consolas,monospace}
+section{margin:32px 0}summary{cursor:pointer;color:#165d91}footer{margin:40px 0;color:#4a555f}</style><body><nav><a href="index.html">API home</a><a href="analysis.html">analysis</a><a href="data.html">data</a><a href="detectors.html">detectors</a><a href="evaluation.html">evaluation</a><a href="extraction.html">extraction</a><a href="faults.html">faults</a><a href="models.html">models</a><a href="project.html">project</a></nav><h1>project API</h1><p>Portable project paths and explicit records of successfully completed runs.</p><section id="file_sha256"><h2><code>file_sha256(path)</code></h2><pre>Return the SHA-256 digest of a file without changing its contents.
+
+Args:
+    path: Readable file path.
+Returns:
+    str: Hexadecimal digest.
+Raises:
+    OSError: The file cannot be read.</pre></section><section id="find_project_root"><h2><code>find_project_root(start=None)</code></h2><pre>Find this project from its root or a nested notebook directory.
+
+Args:
+    start: Directory to search upward from, defaulting to the working directory.
+Returns:
+    pathlib.Path: Resolved directory containing this package and its configuration.
+Raises:
+    FileNotFoundError: No project root can be found.</pre></section><section id="load_settings"><h2><code>load_settings(root)</code></h2><pre>Read the shared fixed experiment settings from config/study.json.
+
+Args:
+    root: Project directory.
+Returns:
+    dict: Seeds, ppm magnitudes, reading counts and model settings.
+Raises:
+    OSError, ValueError: The configuration is missing or invalid JSON.</pre></section><section id="resolve_data_csv"><h2><code>resolve_data_csv(root)</code></h2><pre>Locate authorized course data without embedding a personal computer path.
+
+Priority: CO2_DATA_CSV, ignored config/local.json data_csv, then data/input.csv.
+Accepts a raw course CSV or full-channel extract. Relative paths are resolved
+against the project root; local.json is never intended for Git submission.
+The source is never copied or downloaded by this function.
+
+Args:
+    root: Project directory.
+Returns:
+    pathlib.Path: Existing resolved CSV path.
+Raises:
+    FileNotFoundError: The configured CSV is unavailable.
+    ValueError: The local configuration is invalid.</pre></section><section id="record_run"><h2><code>record_run(root, role, directory)</code></h2><pre>Record a completed main or input-comparison run using relative paths.
+
+Args:
+    root: Project directory.
+    role: &#x27;main&#x27; or &#x27;input_comparison&#x27;.
+    directory: Completed run directory inside the project&#x27;s private results folder.
+Returns:
+    pathlib.Path: Registry path. No registration occurs for an incomplete run.
+Raises:
+    ValueError: The role or directory is invalid.
+    FileNotFoundError: The completion report does not exist.</pre></section><section id="get_run"><h2><code>get_run(root, role)</code></h2><pre>Read and integrity-check an explicitly registered successful run.
+
+Args:
+    root: Project directory.
+    role: &#x27;main&#x27; or &#x27;input_comparison&#x27;.
+Returns:
+    pathlib.Path: Completed private run directory.
+Raises:
+    FileNotFoundError: The preceding notebook has not completed.
+    ValueError: A recorded report was changed or the path escapes the project.</pre></section><details><summary>Inspect module source</summary><pre><code>&quot;&quot;&quot;Portable project paths and explicit records of successfully completed runs.&quot;&quot;&quot;
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def file_sha256(path):
+    &quot;&quot;&quot;Return the SHA-256 digest of a file without changing its contents.
+
+    Args:
+        path: Readable file path.
+    Returns:
+        str: Hexadecimal digest.
+    Raises:
+        OSError: The file cannot be read.
+    &quot;&quot;&quot;
+    digest = hashlib.sha256()
+    with Path(path).open(&quot;rb&quot;) as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b&quot;&quot;):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def find_project_root(start=None):
+    &quot;&quot;&quot;Find this project from its root or a nested notebook directory.
+
+    Args:
+        start: Directory to search upward from, defaulting to the working directory.
+    Returns:
+        pathlib.Path: Resolved directory containing this package and its configuration.
+    Raises:
+        FileNotFoundError: No project root can be found.
+    &quot;&quot;&quot;
+    current = Path(start or Path.cwd()).resolve()
+    for directory in (current, *current.parents):
+        if (directory / &quot;config/study.json&quot;).is_file() and (directory / &quot;src/co2_project&quot;).is_dir():
+            return directory
+    raise FileNotFoundError(&quot;Open a notebook inside the submission project directory.&quot;)
+
+
+def load_settings(root):
+    &quot;&quot;&quot;Read the shared fixed experiment settings from config/study.json.
+
+    Args:
+        root: Project directory.
+    Returns:
+        dict: Seeds, ppm magnitudes, reading counts and model settings.
+    Raises:
+        OSError, ValueError: The configuration is missing or invalid JSON.
+    &quot;&quot;&quot;
+    return json.loads((Path(root) / &quot;config/study.json&quot;).read_text(encoding=&quot;utf-8&quot;))
+
+
+def resolve_data_csv(root):
+    &quot;&quot;&quot;Locate authorized course data without embedding a personal computer path.
+
+    Priority: CO2_DATA_CSV, ignored config/local.json data_csv, then data/input.csv.
+    Accepts a raw course CSV or full-channel extract. Relative paths are resolved
+    against the project root; local.json is never intended for Git submission.
+    The source is never copied or downloaded by this function.
+
+    Args:
+        root: Project directory.
+    Returns:
+        pathlib.Path: Existing resolved CSV path.
+    Raises:
+        FileNotFoundError: The configured CSV is unavailable.
+        ValueError: The local configuration is invalid.
+    &quot;&quot;&quot;
+    root = Path(root).resolve()
+    configured = os.environ.get(&quot;CO2_DATA_CSV&quot;)
+    local = root / &quot;config/local.json&quot;
+    if not configured and local.is_file():
+        settings = json.loads(local.read_text(encoding=&quot;utf-8-sig&quot;))
+        configured = settings.get(&quot;data_csv&quot;) if isinstance(settings, dict) else None
+        if not isinstance(configured, str) or not configured.strip():
+            raise ValueError(&quot;config/local.json must contain a nonempty data_csv path.&quot;)
+    path = Path(configured).expanduser() if configured else Path(&quot;data/input.csv&quot;)
+    if not path.is_absolute():
+        path = root / path
+    path = path.resolve()
+    if not path.is_file():
+        raise FileNotFoundError(&quot;Course data are not bundled. Set config/local.json data_csv, &quot;
+                                &quot;CO2_DATA_CSV, or provide data/input.csv; see data/README.md.&quot;)
+    return path
+
+
+def record_run(root, role, directory):
+    &quot;&quot;&quot;Record a completed main or input-comparison run using relative paths.
+
+    Args:
+        root: Project directory.
+        role: &#x27;main&#x27; or &#x27;input_comparison&#x27;.
+        directory: Completed run directory inside the project&#x27;s private results folder.
+    Returns:
+        pathlib.Path: Registry path. No registration occurs for an incomplete run.
+    Raises:
+        ValueError: The role or directory is invalid.
+        FileNotFoundError: The completion report does not exist.
+    &quot;&quot;&quot;
+    root, directory = Path(root).resolve(), Path(directory).resolve()
+    if role not in (&quot;main&quot;, &quot;input_comparison&quot;):
+        raise ValueError(&quot;Unknown run role.&quot;)
+    relative = directory.relative_to(root)
+    if not relative.parts or relative.parts[0] != &quot;results&quot;:
+        raise ValueError(&quot;Run directories must be inside the project&#x27;s results folder.&quot;)
+    report_path = directory / &quot;run_report.json&quot;
+    report = json.loads(report_path.read_text(encoding=&quot;utf-8&quot;))
+    registry = root / &quot;results/run_registry.json&quot;
+    content = json.loads(registry.read_text(encoding=&quot;utf-8&quot;)) if registry.exists() else {}
+    content[role] = {&quot;path&quot;: relative.as_posix(), &quot;report_sha256&quot;: file_sha256(report_path),
+                     &quot;source_sha256&quot;: report.get(&quot;source_sha256&quot;, report.get(&quot;audit&quot;, {}).get(&quot;source_sha256&quot;)),
+                     &quot;prepared_sha256&quot;: report.get(&quot;audit&quot;, {}).get(&quot;prepared_sha256&quot;),
+                     &quot;completed_utc&quot;: datetime.now(timezone.utc).isoformat()}
+    temporary = registry.with_suffix(&quot;.tmp&quot;)
+    temporary.write_text(json.dumps(content, indent=2), encoding=&quot;utf-8&quot;)
+    temporary.replace(registry)
+    return registry
+
+
+def get_run(root, role):
+    &quot;&quot;&quot;Read and integrity-check an explicitly registered successful run.
+
+    Args:
+        root: Project directory.
+        role: &#x27;main&#x27; or &#x27;input_comparison&#x27;.
+    Returns:
+        pathlib.Path: Completed private run directory.
+    Raises:
+        FileNotFoundError: The preceding notebook has not completed.
+        ValueError: A recorded report was changed or the path escapes the project.
+    &quot;&quot;&quot;
+    root = Path(root).resolve()
+    registry = root / &quot;results/run_registry.json&quot;
+    if not registry.exists():
+        raise FileNotFoundError(&quot;Run notebook 01 before reading registered results.&quot;)
+    entry = json.loads(registry.read_text(encoding=&quot;utf-8&quot;)).get(role)
+    if entry is None:
+        raise FileNotFoundError(f&quot;No completed {role} run. Follow notebooks 01, 02, then 03.&quot;)
+    directory = (root / entry[&quot;path&quot;]).resolve()
+    relative = directory.relative_to(root)
+    if relative.parts[0] != &quot;results&quot;:
+        raise ValueError(&quot;Registry path must point inside results.&quot;)
+    if file_sha256(directory / &quot;run_report.json&quot;) != entry[&quot;report_sha256&quot;]:
+        raise ValueError(&quot;The recorded completion report changed; inspect the run registry.&quot;)
+    return directory
+</code></pre></details></body></html>
